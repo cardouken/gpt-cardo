@@ -1,9 +1,9 @@
 const axios = require("axios");
 const functions = require('firebase-functions');
 
-exports.sendTelegramMessage = async function (text, number, replyId = null) {
+exports.sendTelegramMessage = async function (text, chatId, replyId = null) {
     let data = {
-        chat_id: number,
+        chat_id: chatId,
         text: text,
     };
 
