@@ -13,8 +13,7 @@ const stopSequence = "<END>";
 const meToken = "Me:";
 const theyToken = "They:";
 const newConvoElapsedTime = 3600;
-const promptMaxChar = 1400;
-const replyDelay = 2000
+const promptMaxChar = 1800;
 
 app.post("/telegram", async (req, res) => {
     const db = admin.firestore();
@@ -47,9 +46,8 @@ app.post("/telegram", async (req, res) => {
                 await personRef.update({
                     newConversationRequested: true
                 });
-                await sendTelegramMessage("<Info> Conversation history reset", userId, message?.message_id);
+                await sendTelegramMessage("Conversation history has been reset", userId, message?.message_id);
                 break;
-
             default:
                 const messageTimestamp = new Timestamp(parseInt(message.date), 0);
                 const messagesRef = personRef.collection("messages");
@@ -71,34 +69,29 @@ app.post("/telegram", async (req, res) => {
                     newConversationRequested: false
                 });
 
-                const latestUserMessageSnap = await messagesRef.where("from", "==", "them").orderBy("timestamp", "desc").limit(1).get();
+                await sleep(3000)
+                const latestConvStartSnap = await messagesRef.where("convStart", "==", true).orderBy("timestamp", "desc").limit(1).get();
+                if (latestConvStartSnap.empty) {
+                    console.log("No conversation start found");
+                    return;
+                }
+                const convoStartTime = await latestConvStartSnap.docs[0].get("timestamp");
+                const convoQuerySnap = await messagesRef.where("timestamp", ">=", convoStartTime).orderBy("timestamp").get();
 
-                setTimeout(async () => {
-                    const latestUserMessageSnapAfterWaiting = await messagesRef.where("from", "==", "them").orderBy("timestamp", "desc").limit(1).get();
-                    if (latestUserMessageSnapAfterWaiting.docs[0].id === latestUserMessageSnap.docs[0].id) {
-                        const latestConvStartSnap = await messagesRef.where("convStart", "==", true).orderBy("timestamp", "desc").limit(1).get();
-                        if (latestConvStartSnap.empty) {
-                            return;
-                        }
-                        const convoStartTime = await latestConvStartSnap.docs[0].get("timestamp");
-                        const convoQuerySnap = await messagesRef.where("timestamp", ">=", convoStartTime).orderBy("timestamp").get();
+                let prompt = "";
+                convoQuerySnap.forEach(doc => {
+                    const message = doc.data();
+                    const prefix = message.from === "me" ? meToken : theyToken
+                    prompt += `${prefix}${message.text}\n`
+                })
+                prompt += `${meToken}`;
+                prompt = truncatePrompt(prompt);
 
-                        let prompt = "";
-                        convoQuerySnap.forEach(doc => {
-                            const message = doc.data();
-                            const prefix = message.from === "me" ? meToken : theyToken
-                            prompt += `${prefix}${message.text}\n`
-                        })
-                        prompt += `${meToken}`;
-                        prompt = truncatePrompt(prompt);
-
-                        const gptResponse = await callGpt(prompt, stopSequence);
-                        await handleResponse(gptResponse, messagesRef, userId);
-                    }
-                }, replyDelay);
+                const gptResponse = await callGpt(prompt, stopSequence);
+                await handleResponse(gptResponse, messagesRef, userId);
                 break;
         }
-        res.sendStatus(2000);
+        res.sendStatus(200);
     } else if (req.body && req.body.edited_message) {
         try {
             const editedMessage = req.body.edited_message;
@@ -131,6 +124,7 @@ async function handleResponse(gptResponse, messagesRef, number) {
     if (!!gptResponse) {
         let truncatedResponse = gptResponse.split(theyToken)[0];
         let replies = truncatedResponse.split(`${meToken}`);
+        console.log(replies);
         let reply;
         for (reply of replies) {
             const res = await sendTelegramMessage(reply, number);
@@ -142,22 +136,24 @@ async function handleResponse(gptResponse, messagesRef, number) {
                 text: reply.trim(),
                 convStart: false,
             })
+            await sleep(1750);
         }
     }
 }
 
 async function callGpt(prompt, stopSequence) {
+    console.log("Making request to GPT")
     const configuration = new Configuration({
         apiKey: process.env.OPENAI_API_KEY,
     });
     const openai = new OpenAIApi(configuration);
     let completionRequest = {
-        model: process.env.MODEL_NAME,
+        model: "curie:ft-personal-2023-04-21-02-30-57",
         prompt: prompt,
         temperature: 0.5,
         max_tokens: 100,
-        frequency_penalty: 0.5,
-        presence_penalty: 0.3,
+        frequency_penalty: 0.8,
+        presence_penalty: 0.8,
         stop: stopSequence,
     };
 
@@ -178,6 +174,10 @@ async function callGpt(prompt, stopSequence) {
             console.log(error.message);
         }
     }
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 exports.handler = functions
