@@ -1,4 +1,3 @@
-const functions = require('firebase-functions');
 const admin = require('firebase-admin');
 const express = require('express');
 const {Timestamp} = require('firebase-admin/firestore');
@@ -7,6 +6,7 @@ const {Configuration, OpenAIApi} = require("openai");
 const {sendTelegramMessage} = require("./sendTelegramMessage");
 
 admin.initializeApp();
+
 const app = express();
 const stopSequence = "<END>";
 const meToken = "Me:";
@@ -45,7 +45,7 @@ app.post("/telegram", async (req, res) => {
         const chatType = message.chat.type;
         const chatTitle = message.chat?.title;
         let chatId = message.chat.id;
-        console.log(`message: ${message} | userId: ${userId} | userFirstname: ${userFirstname} | chatId: ${chatId} | chatType: ${chatType} | chatTitle: ${chatTitle}`)
+        console.log(`userId: ${userId} | userFirstname: ${userFirstname} | chatId: ${chatId} | chatType: ${chatType} | chatTitle: ${chatTitle}`)
 
         let name = chatTitle;
         if (chatType === "private") {
@@ -96,60 +96,63 @@ app.post("/telegram", async (req, res) => {
                 break;
             case "/model":
             case "/model@cardonotabot":
+                let modelDescription = ""
                 if (model === "curie:ft-personal-2023-04-20-20-43-28") {
                     model = "curie:ft-personal-2023-04-21-02-30-57"
+                    modelDescription = "trained on 4 months of data but somehow seems dumber and more and intolerable sometimes"
                 } else {
                     model = "curie:ft-personal-2023-04-20-20-43-28"
+                    modelDescription = "trained on only 1 month of data, should be even dumber but actually kinda funny no lie"
                 }
-                await sendTelegramMessage(`Using model ${model} for future requests`, chatId, message?.message_id);
+                await sendTelegramMessage(`Future answers will use model ${model}\n(${modelDescription})`, chatId, message?.message_id);
                 break;
-            case "/temp0_1":
-            case "/temp0_1@cardonotabot":
+            case "/temp1":
+            case "/temp1@cardonotabot":
                 temp = 0.1
                 await sendTelegramMessage(`Using temperature ${temp} for future requests`, chatId, message?.message_id);
                 break;
-            case "/temp0_2":
-            case "/temp0_2@cardonotabot":
+            case "/temp2":
+            case "/temp2@cardonotabot":
                 temp = 0.2
                 await sendTelegramMessage(`Using temperature ${temp} for future requests`, chatId, message?.message_id);
                 break;
-            case "/temp0_3":
-            case "/temp0_3@cardonotabot":
+            case "/temp3":
+            case "/temp3@cardonotabot":
                 temp = 0.3
                 await sendTelegramMessage(`Using temperature ${temp} for future requests`, chatId, message?.message_id);
                 break;
-            case "/temp0_4":
-            case "/temp0_4@cardonotabot":
+            case "/temp4":
+            case "/temp4@cardonotabot":
                 temp = 0.4
                 await sendTelegramMessage(`Using temperature ${temp} for future requests`, chatId, message?.message_id);
                 break;
-            case "/temp0_5":
-            case "/temp0_5@cardonotabot":
+            case "/temp5":
+            case "/temp5@cardonotabot":
                 temp = 0.5
                 await sendTelegramMessage(`Using temperature ${temp} for future requests`, chatId, message?.message_id);
                 break;
-            case "/temp0_6":
-            case "/temp0_6@cardonotabot":
+            case "/temp6":
+            case "/temp6@cardonotabot":
                 temp = 0.6
                 await sendTelegramMessage(`Using temperature ${temp} for future requests`, chatId, message?.message_id);
                 break;
-            case "/temp0_7":
-            case "/temp0_7@cardonotabot":
+            case "/temp7":
+            case "/temp7@cardonotabot":
                 temp = 0.7
                 await sendTelegramMessage(`Using temperature ${temp} for future requests`, chatId, message?.message_id);
                 break;
-            case "/temp0_8":
-            case "/temp0_8@cardonotabot":
+            case "/temp8":
+            case "/temp8@cardonotabot":
                 temp = 0.8
                 await sendTelegramMessage(`Using temperature ${temp} for future requests`, chatId, message?.message_id);
                 break;
-            case "/temp0_9":
-            case "/temp0_9@cardonotabot":
+            case "/temp9":
+            case "/temp9@cardonotabot":
                 temp = 0.9
                 await sendTelegramMessage(`Using temperature ${temp} for future requests`, chatId, message?.message_id);
                 break;
-            case "/temp1_0":
-            case "/temp1_0@cardonotabot":
+            case "/temp10":
+            case "/temp10@cardonotabot":
                 temp = 1.0
                 await sendTelegramMessage(`Using temperature ${temp} for future requests`, chatId, message?.message_id);
                 break;
@@ -177,31 +180,77 @@ app.post("/telegram", async (req, res) => {
                     from: "them",
                     text: text,
                     convStart: convStart,
+                    authorName: userFirstname
                 });
-                await chatRef.update({
-                    newConversationRequested: false
-                });
+                await chatRef.update({newConversationRequested: false});
+                let newMessageFound = true;
+                let convoQuerySnap;
 
-                await sleep(3200)
-                const latestConvStartSnap = await messagesRef.where("convStart", "==", true).orderBy("timestamp", "desc").limit(1).get();
-                if (latestConvStartSnap.empty) {
-                    console.log("No conversation start found");
-                    return;
+                while (newMessageFound) {
+                    await sleep(4000);
+                    const latestConvoStartSnap = await messagesRef
+                        .where("convStart", "==", true)
+                        .orderBy("timestamp", "desc")
+                        .limit(1)
+                        .get();
+
+                    if (latestConvoStartSnap.empty) {
+                        console.log("No conversation start found");
+                        return;
+                    }
+
+                    const convoStartTime = await latestConvoStartSnap.docs[0].get("timestamp");
+                    convoQuerySnap = await messagesRef
+                        .where("timestamp", ">=", convoStartTime)
+                        .orderBy("timestamp")
+                        .get();
+
+                    // Check if there is a new message
+                    const latestMessage = await messagesRef.where("from", "==", "them").orderBy("timestamp", "desc").limit(1).get();
+                    console.log(latestMessage.docs[0].get("text"));
+                    const latestMessageTimestamp = latestMessage.docs[0].get("timestamp");
+                    const currentTimestamp = Timestamp.now();
+                    if (currentTimestamp.toMillis() - latestMessageTimestamp.toMillis() < 4000) {
+                        newMessageFound = true;
+                        console.log("New message found, waiting for more messages");
+                    } else {
+                        newMessageFound = false;
+                        console.log("No new message found, starting to generate response");
+                        console.log(`${currentTimestamp.toMillis()} ${latestMessageTimestamp.toMillis()}`);
+                    }
                 }
-                const convoStartTime = await latestConvStartSnap.docs[0].get("timestamp");
-                const convoQuerySnap = await messagesRef.where("timestamp", ">=", convoStartTime).orderBy("timestamp").get();
 
                 let prompt = "";
-                convoQuerySnap.forEach(doc => {
+                convoQuerySnap.forEach((doc) => {
                     const message = doc.data();
-                    const prefix = message.from === "me" ? meToken : theyToken
-                    prompt += `${prefix}${message.text}\n`
-                })
+                    const prefix = message.from === "me" ? meToken : theyToken;
+                    prompt += `${prefix}${message.text}\n`;
+                });
                 prompt += `${meToken}`;
                 prompt = truncatePrompt(prompt);
 
                 const gptResponse = await callGpt(prompt, stopSequence);
                 await handleResponse(gptResponse, messagesRef, chatId);
+                // await sleep(4000)
+                // const latestConvStartSnap = await messagesRef.where("convStart", "==", true).orderBy("timestamp", "desc").limit(1).get();
+                // if (latestConvStartSnap.empty) {
+                //     console.log("No conversation start found");
+                //     return;
+                // }
+                // const convoStartTime = await latestConvStartSnap.docs[0].get("timestamp");
+                // const convoQuerySnap = await messagesRef.where("timestamp", ">=", convoStartTime).orderBy("timestamp").get();
+                //
+                // let prompt = "";
+                // convoQuerySnap.forEach(doc => {
+                //     const message = doc.data();
+                //     const prefix = message.from === "me" ? meToken : theyToken
+                //     prompt += `${prefix}${message.text}\n`
+                // })
+                // prompt += `${meToken}`;
+                // prompt = truncatePrompt(prompt);
+                //
+                // const gptResponse = await callGpt(prompt, stopSequence);
+                // await handleResponse(gptResponse, messagesRef, chatId);
                 break;
         }
         res.sendStatus(200);
@@ -283,7 +332,4 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-exports.handler = functions
-    .region("europe-west1")
-    .runWith({secrets: ["OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN", "MODEL_NAME"]})
-    .https.onRequest(app);
+module.exports = app;
