@@ -6,14 +6,19 @@ const tokenCounter = require('openai-gpt-token-counter')
 const {Configuration, OpenAIApi} = require("openai");
 const {sendTelegramMessage} = require("./sendTelegramMessage");
 
-admin.initializeApp();
+const CONSTANTS = {
+    meToken: "Me:",
+    theyToken: "They:",
+    stopSequence: "<END>",
+    newConversationRequested: 'newConversationRequested',
+    convStart: 'convStart',
+    from: 'from',
+    promptMaxChar: 1800,
+    newConvoElapsedTime: 3600
+};
 
+admin.initializeApp();
 const app = express();
-const stopSequence = "<END>";
-const meToken = "Me:";
-const theyToken = "They:";
-const newConvoElapsedTime = 3600;
-const promptMaxChar = 1800;
 
 app.post("/telegram", async (req, res) => {
     const db = admin.firestore();
@@ -43,63 +48,16 @@ app.post("/telegram", async (req, res) => {
 
         switch (text.toLowerCase()) {
             case "/reset":
-                await personRef.update({
-                    newConversationRequested: true
-                });
-                await sendTelegramMessage("Conversation history has been reset", userId, message?.message_id);
+                await handleResetCase(text, personRef, message, userId);
                 break;
             default:
-                const messageTimestamp = new Timestamp(parseInt(message.date), 0);
-                const messagesRef = personRef.collection("messages");
-                const latestSnap = await messagesRef.where("from", "==", "me").orderBy("timestamp", "desc").limit(1).get();
-                const newConversationRequested = personSnap.get('newConversationRequested');
-                let convStart
-                if (!latestSnap.empty) {
-                    convStart = newConversationRequested || (messageTimestamp.seconds - latestSnap.docs[0].get("timestamp").seconds) > newConvoElapsedTime;
-                } else {
-                    convStart = newConversationRequested;
-                }
-                await messagesRef.doc(`${message.message_id}`).set({
-                    timestamp: messageTimestamp,
-                    from: "them",
-                    text: text,
-                    convStart: convStart,
-                });
-                await personRef.update({
-                    newConversationRequested: false
-                });
-
-                await sleep(3000)
-                const latestConvStartSnap = await messagesRef.where("convStart", "==", true).orderBy("timestamp", "desc").limit(1).get();
-                if (latestConvStartSnap.empty) {
-                    console.log("No conversation start found");
-                    return;
-                }
-                const convoStartTime = await latestConvStartSnap.docs[0].get("timestamp");
-                const convoQuerySnap = await messagesRef.where("timestamp", ">=", convoStartTime).orderBy("timestamp").get();
-
-                let prompt = "";
-                convoQuerySnap.forEach(doc => {
-                    const message = doc.data();
-                    const prefix = message.from === "me" ? meToken : theyToken
-                    prompt += `${prefix}${message.text}\n`
-                })
-                prompt += `${meToken}`;
-                prompt = truncatePrompt(prompt);
-
-                const gptResponse = await callGpt(prompt, stopSequence);
-                await handleResponse(gptResponse, messagesRef, userId);
+                await handleDefaultCase(personRef, message, userId, personSnap, text);
                 break;
         }
         res.sendStatus(200);
     } else if (req.body && req.body.edited_message) {
         try {
-            const editedMessage = req.body.edited_message;
-            const userId = editedMessage.from.id;
-            const updateMessageRef = db.collection("people").doc(`${userId}`).collection("messages").doc(`${editedMessage.message_id}`);
-            await updateMessageRef.update({
-                text: editedMessage.text
-            });
+            await handleEditedMessage(req, res, db);
         } catch (error) {
             functions.logger.log(error);
         }
@@ -109,21 +67,83 @@ app.post("/telegram", async (req, res) => {
     }
 });
 
+async function handleResetCase(personRef, message, userId) {
+    await personRef.update({
+        newConversationRequested: true
+    });
+    await sendTelegramMessage("Conversation history has been reset", userId, message?.message_id);
+
+}
+
+async function handleDefaultCase(personRef, message, userId, personSnap, text) {
+    const messageTimestamp = new Timestamp(parseInt(message.date), 0);
+    const messagesRef = personRef.collection("messages");
+    const latestSnap = await messagesRef.where(CONSTANTS.from, "==", "me").orderBy("timestamp", "desc").limit(1).get();
+    const newConversationRequested = personSnap.get(CONSTANTS.newConversationRequested);
+    let convStart
+    if (!latestSnap.empty) {
+        convStart = newConversationRequested || (messageTimestamp.seconds - latestSnap.docs[0].get("timestamp").seconds) > CONSTANTS.newConvoElapsedTime;
+    } else {
+        convStart = newConversationRequested;
+    }
+    await messagesRef.doc(`${message.message_id}`).set({
+        timestamp: messageTimestamp,
+        from: "them",
+        text: text,
+        convStart: convStart,
+    });
+
+    await personRef.update({
+        newConversationRequested: false
+    });
+    await sleep(3000)
+    const latestConvStartSnap = await messagesRef.where(CONSTANTS.convStart, "==", true).orderBy("timestamp", "desc").limit(1).get();
+    if (latestConvStartSnap.empty) {
+        console.log("No conversation start found");
+        return;
+    }
+    const convoStartTime = await latestConvStartSnap.docs[0].get("timestamp");
+
+    const convoQuerySnap = await messagesRef.where("timestamp", ">=", convoStartTime).orderBy("timestamp").get();
+    let prompt = "";
+    convoQuerySnap.forEach(doc => {
+        const message = doc.data();
+        const prefix = message.from === "me" ? CONSTANTS.meToken : CONSTANTS.theyToken
+        prompt += `${prefix}${message.text}\n`
+    })
+    prompt += `${CONSTANTS.meToken}`;
+
+    prompt = truncatePrompt(prompt);
+    const gptResponse = await callGpt(prompt, CONSTANTS.stopSequence);
+    await handleResponse(gptResponse, messagesRef, userId);
+
+}
+
+async function handleEditedMessage(req, res, db) {
+    const editedMessage = req.body.edited_message;
+    const userId = editedMessage.from.id;
+    const updateMessageRef = db.collection("people").doc(`${userId}`).collection("messages").doc(`${editedMessage.message_id}`);
+    await updateMessageRef.update({
+        text: editedMessage.text
+    });
+
+}
+
 function truncatePrompt(prompt) {
     let truncatedPrompt = prompt;
-    if (truncatedPrompt.length > promptMaxChar) {
-        truncatedPrompt = truncatedPrompt.slice(-promptMaxChar);
+    if (truncatedPrompt.length > CONSTANTS.promptMaxChar) {
+        truncatedPrompt = truncatedPrompt.slice(-CONSTANTS.promptMaxChar);
     }
-    const indexOfFirstMeToken = truncatedPrompt.indexOf(meToken);
-    const indexOfFirstTheyToken = truncatedPrompt.indexOf(theyToken);
+    const indexOfFirstMeToken = truncatedPrompt.indexOf(CONSTANTS.meToken);
+    const indexOfFirstTheyToken = truncatedPrompt.indexOf(CONSTANTS.theyToken);
     const newStartIndex = Math.min(indexOfFirstMeToken, indexOfFirstTheyToken);
     return truncatedPrompt.slice(newStartIndex);
 }
 
 async function handleResponse(gptResponse, messagesRef, number) {
     if (!!gptResponse) {
-        let truncatedResponse = gptResponse.split(theyToken)[0];
-        let replies = truncatedResponse.split(`${meToken}`);
+        let truncatedResponse = gptResponse.split(CONSTANTS.theyToken)[0];
+        let replies = truncatedResponse.split(`${CONSTANTS.meToken}`);
         console.log(replies);
         let reply;
         for (reply of replies) {
